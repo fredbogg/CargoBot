@@ -1,83 +1,77 @@
---ABCMusic class by Fred Bogg
--- v 0.4.2.2 beta
--- optimised cache size
+-- ABCMusic class by Fred Bogg. See Main for more info.
 
 ABCMusic = class()
       
-function ABCMusic:init(_ABCTune,LOOP,DEBUG,DUMP)
-
-    --watch("currentMusic.soundTablePointer")
-    self.time = 0
-    self.timerSeconds = 0
-    self.code = "x=1"
+function ABCMusic:init(_ABCTUNE,LOOP,INSTRUMENT,RELOAD,DEBUG,DUMP)
+    -- if true, LOOP will keep the tune playing over and over and over...
+    -- INSTRUMENT is the element number of the instrument table, which contains sfxr settings.
+    -- DEBUG will print out hopefully handy things, but probably not helpful to you.
+    -- DUMP should only be used in emergencies and then only with several bars worth, or hang.
     
+    -- take arguments and set defaults
+    self.instrument = INSTRUMENT
+    if self.instrument == nil then self.instrument = 1 end
     self.DEBUG = DEBUG
     if self.DEBUG == nil then self.DEBUG = false end
     if DUMP == nil then DUMP = false end
-    if _ABCTune == nil then
-        print("No tune provided. Use ABCMusic(tunename)")
+    self.RELOAD = RELOAD
+    if self.RELOAD ~= nil then print("Forcing parse of tune.") end
+    
+    self._ABCtune = _ABCTUNE
+    if self._ABCtune == nil then
+        print("No tune provided. Use ABCMusic(tunename,LOOP,INSTRUMENT,DEBUG,DUMP)")
+        print("For example, mytune = ABCMusic(ABCtune,1,4)")
     end    
+    
     self.LOOP = LOOP
     
-    nextT = 0
-    cachingSpeed = 0 -- in seconds
-    cachedIdx = 0
+    -- clear the saved tables for tunes before releasing
     
-  
-    noteNo = 1
-    bufferTable = {}
-    gnFrequency = 0
+    -- clearProjectData()
+    
+    -- initialise variables
+    self.time = 0
+    self.timerSeconds = 0
+    
+    -- caching variables should be visible by all instances, as we do it all together.
+    gnNextT = 0 -- the number of seconds until we cache the next note.
+    gnCachingSpeed = 0 -- in seconds, how long should we wait before caching the next note.
+    gnCachedIdx = 0 -- the index that will track which record in the caching table we are up to.
+    
+    -- fade variables should be per instance to allow cross fades.  To be selfed.
     gnMasterVolume = 0.5 -- this is the default setting, will be altered for fades
     gnFadeCountup = 0
-    gnFadeSecondsTarget = 0
-    gnMasterVolumeModifier = 0
+    gnFadeSecondsTarget = 0 -- fade should take this long
+    gnMasterVolumeModifier = 0 -- how much did we change
+    gnNoteVolume = 1 -- full blast. 0 is silent. volume of a particular note, to be selfed.
     
-    self.barAccidentals = ""
-    y=0
-    self.remainingTupletNotes =0
+    self.soundTablePointer = 1 -- this is which record we are up to playing.
+    self.barAccidentals = "" -- what notes need an accidental applied in the bar?
+    self.remainingTupletNotes = 0
     
-    self.soundTablePointer=1
     
-    self.soundTable = {}
+    self.soundTable = {} -- this table will hold the parameters to be turned into a sound.
+    self.timeElapsedSinceLastNote = 0 -- used to check in the draw() loop whether to move on.
+    self.duration = 1 -- in ABC format this is a unit, usually equivalent to a quaver.
+    self.DurationSeconds = 0 -- to be used to hold the number of seconds a note will be held.
     
-    self.timeElapsedSinceLastNote = 0
-
-    self.duration = 1
-    gnDurationSeconds = 0
-    gnNoteVolume = 1
-    --tempDuration = 1
-    self.tempo = 240 -- if no tempo is specified in the file, use this
-    self.noteLength = (1/8) -- if no default note length is specified in the file, use this
+    self.tempo = 240 -- if no tempo is specified in the file, use this - fast!
+    self.noteLength = (1/8) -- if no default note length is specified in the file, use this.
     
     -- This is the cycle of fifths.  It helps us figure out which accidentals to use
     -- for a given key.
-    cycleOfFifths = {"Cb","Gb","Db","Ab","Eb","Bb","F",
-    "C","G","D","A","E","B","F#","C#","G#","D#","A#"}
+    gtCycleOfFifths = {"Cb","Gb","Db","Ab","Eb","Bb","F",
+                     "C","G","D","A","E","B","F#","C#","G#","D#","A#"}
       
-    -- This is the amount you need to multiply a note value by to get the next highest one.
-    -- Don't ask me why it's not in hertz, it hurts.
-    multiplier = 1.0296
-    
-     --1.0296 works for parameter tables, but the loss of precision using the encoded sound means this is out of tune.
-    pitchTable = {1} -- This table will be filled with the note values
-    pitch = pitchTable[1]
     self.semitoneModifier = 0
     
     gsNoteOrder = "CDEFGABcdefgab"
-    gsTonalSystem = "22122212212221" -- compared with the noteOrder, this shows the no of 
+    gsTonalSystem = "22122212212221" -- together with the noteOrder, this shows the no of 
                                   --  semitones between each note, like the black and white keys.
-   
-    -- There are 88 keys on a piano, so we will start from our highest note and go down.
-    -- We calculate the notes ourselves and put them in a table. 
-    for i = 88, 1, -1 do
-        pitch = pitch / multiplier
-        table.insert(pitchTable,1,pitch)
-    end
-    --print(table.concat(pitchTable,"\n"))
         
     -- These are the 'Guitar chords' and the notes making up each one.
     -- Further work needed to expand the range of chords known.
-    chordList = {
+    gtChordList = {
     ["C"]={"C","E","G"},
     ["C7"]={"C","E","G","^A"},
     ["D"]={"D","^F","A"},
@@ -94,9 +88,9 @@ function ABCMusic:init(_ABCTune,LOOP,DEBUG,DUMP)
     ["Am7"]={"A","C","E","G"},
     ["Bb"]={"_B","D","F"},
     ["Bm"]={"B","D","^F"}}
-
+        
     -- Print the raw ABC tune for debugging
-    if DEBUG then print(_ABCtune) end
+    if self.DEBUG then print(self._ABCtune) end
     
     -- This is a table of patterns that we use to match against the ABC tune.
     -- We use these to find the next, biggest meaningful bit of the tune.
@@ -104,22 +98,22 @@ function ABCMusic:init(_ABCTune,LOOP,DEBUG,DUMP)
     -- sets of parentheses.
     -- Not all tokens have been implemented yet, but at least we understand
     -- musically what is going on.
-    tokenList = {
-        TOKEN_REFERENCE = "^X:%s?(.-)\n",
-        TOKEN_TITLE = "^T:%s?(.-)\n",
-        TOKEN_COMMENT = "%%.-\n",
+    gtTokenList = {
+        TOKEN_REFERENCE = "^X:%s?(.-)\n", -- X: 1
+        TOKEN_TITLE = "^T:%s?(.-)\n", -- T: Example Title
+        TOKEN_COMMENT = "%%.-\n", -- % anything starting with % is a comment
         TOKEN_KEY = "%[?K:%s?(%a[b#]?)%s?(%a*)[%]\n]", -- matches optional inline [K:...]
-        TOKEN_METRE = "%[?M:%s?(.-)[%]\n]",
-        TOKEN_DEFAULT_NOTE_LENGTH = "%[?L:%s?(%d-)%/(%d-)[%]\n]",
-        TOKEN_TEMPO = "%[?Q:%s?(%d*%/?%d*)%s?=?%s?(%d*)[%]\n]", -- matches deprecated, see standard
-        TOKEN_CHORD_DURATION = '%[([%^_=]?[a-gA-G][,\']?[,\']?[,\']?%d*/?%d?.-)%]',
-        TOKEN_GUITAR_CHORD = '"(%a+%d?)"',
+        TOKEN_METRE = "%[?M:%s?(.-)[%]\n]", -- M: 1/4
+        TOKEN_DEFAULT_NOTE_LENGTH = "%[?L:%s?(%d-)%/(%d-)[%]\n]", -- L: 1/8
+        TOKEN_TEMPO = "%[?Q:%s?(%d*%/?%d*)%s?=?%s?(%d*)[%]\n]", -- matches deprecated, see standard, Q: 120 or Q: 1/4=120
+        TOKEN_CHORD_DURATION = '%[([%^_=]?[a-gA-G][,\']?[,\']?[,\']?%d*/?%d?.-)%]', -- [CEG]
+        TOKEN_GUITAR_CHORD = '"(%a+%d?)"', -- "Gm"
        --[[ TOKEN_START_REPEAT = '|:',
         TOKEN_END_REPEAT = ':|',
         TOKEN_END_REPEAT_START = ":|?:",
         TOKEN_NUMBERED_REPEAT_START = "[|%[]%d",
         --]]
-        TOKEN_NOTE_DURATION = '([%^_=]?[a-gA-GzZ][,\']?[,\']?[,\']?)(%d*%.?%d?/?%d?)',
+        TOKEN_NOTE_DURATION = '([%^_=]?[a-gA-GzZ][,\']?[,\']?[,\']?)(%d*%.?%d?/?%d?)', -- c'2
       --[[  TOKEN_PREV_DOTTED_NEXT_HALVED = ">",
         TOKEN_PREV_HALVED_NEXT_DOTTED = "<",
         TOKEN_SPACE = "%s",--]]
@@ -137,21 +131,103 @@ function ABCMusic:init(_ABCTune,LOOP,DEBUG,DUMP)
         TOKEN_END_SLUR = "%)",
         TOKEN_STACATO = "%.",--]]
      --   TOKEN_TUPLET = "%(([1-9])([%^_=]?[a-gA-G][,']?[,\']?[,\']?[%^_=]?[a-gA-G]?[,']?[,\']?[,\']?[%^_=]?[a-gA-G]?[,']?[,\']?[,\']?)",
-        TOKEN_TUPLET_INDICATOR = "%([1-9]:?([1-9]?):?([1-9]?)",
-        TOKEN_TIE = "([%^_=]?[a-gA-G][,\']?[,\']?[,\']?)%d?/?%d?%-^[%]]-(%1%d?/?%d?%-?)", -- greedy?
-        TOKEN_DYNAMIC = "!([pmf]-)!",
+        TOKEN_TUPLET_INDICATOR = "%([1-9]:?([1-9]?):?([1-9]?)", -- (3:2:2
+        TOKEN_TIE = "([%^_=]?[a-gA-G][,\']?[,\']?[,\']?)%d?/?%d?%-^[%]]-(%1%d?/?%d?%-?)", -- greedy? c-c
+        TOKEN_DYNAMIC = "!([pmf]-)!", -- !mp!
         TOKEN_MISC_FIELD = "^[(ABCDEFGHIJNOPRSUVWYZmrsw)]:([^|]-)\n"} -- no overlap with 
                                                 -- already specified fields like METRE or KEY
                                                 
-    self:parseTune(_ABCTune)
-    self:createSoundTable()
-    self:preCache()
+--    sound(SOUND_BLIT, 10393)
+
+    -- if a tune was passed
+    if self._ABCtune ~= nil then
+        local lsNameHash = self:extractTitle(self._ABCtune)
+        if lsNameHash == nil then lsNameHash = "untitled" end
+        print("The title of the tune is ".. lsNameHash)
+        self.soundTable = self:loadParsedTune(lsNameHash)
+        
+        if self.soundTable == nil or self.RELOAD then
+            self.soundTable = {}
+            self:parseTune(self._ABCtune) -- read and make sense of the ABC tune
+             -- sound(SOUND_PICKUP, 45359)
+            self:createSoundTable() -- fill table up with freq values and timings to feed sound()
+        end
+    else
+        -- use last saved parsed tune if no ABC tune provided
+        self.soundTable = self:loadParsedTune()
+    end
     
+   -- sound(SOUND_JUMP, 25400)
+    self:preCache() -- play it first silently to cache, without duplicates
+--    sound(SOUND_EXPLODE, 16774)
+
     if DUMP then
-        dump(self.soundTable) -- for debugging
+        dump(self.soundTable) -- for debugging, but really slow with more than a line of tune
     end
 end
 
+function ABCMusic:loadParsedTune(key)
+    local lsNameHash = key
+    if lsNameHash == nil then
+        lsNameHash = "mySavedTune"
+    end
+    local lsSavedTunes = readProjectData("savedTunes")
+    if lsSavedTunes == nil then lsSavedTunes = "" end
+    print("These are the saved tunes:\n"..lsSavedTunes)
+    -- get the string saved from the last parse
+    local lsLoadedString = readProjectData(lsNameHash)
+    -- decode it from JSON to table
+    if lsLoadedString ~= nil then
+        print("Loaded "..lsNameHash)
+        return Json.Decode(lsLoadedString)
+    else
+        print("Could not load a pre-parsed tune. Perhaps this is the first time playing it.")
+        return nil
+    end
+end
+
+function ABCMusic:extractTitle(tune)
+        -- make name by finding title
+    local _ABCtune = tune
+    local lsNameHash
+    local lnStartIndex, _ = string.find(_ABCtune,"T:") + 2
+    if lnStartIndex == nil then
+        lsNameHash = nil
+    else
+        local lnEndIndex = string.find(_ABCtune,":",lnStartIndex) - 2
+        lsNameHash = string.sub(_ABCtune,lnStartIndex, lnEndIndex)..self.instrument
+    end
+    
+    return lsNameHash
+end
+
+function ABCMusic:saveParsedTune(table)
+    -- if hasn't been saved before and not force parse
+    local lsNameHash
+    if self._ABCtune ~= nil then
+        lsNameHash = self:extractTitle(self._ABCtune)
+    end
+    if lsNameHash == nil then lsNameHash = "untitled" end
+    
+    -- search for name
+    local lsSavedTunes = readProjectData("savedTunes")
+    if lsSavedTunes == nil then lsSavedTunes = "" end
+   
+    if string.match(lsSavedTunes, lsNameHash) == nil then
+        
+        -- convert nested table to JSON and save as a string
+        local json = Json.Encode(table)
+           
+        saveProjectData(lsNameHash,json) 
+        
+        saveProjectData("savedTunes", lsSavedTunes .. "\n" .. lsNameHash)
+        
+    else
+        print("tune already saved")
+    end
+end
+
+-- the ABC standard allows fraction durations, so we turn them from strings to numbers here.
 function ABCMusic:convertStringFraction(s)
     if string.sub(s,1,1) == "/" then
             s = "1"..s               
@@ -162,20 +238,21 @@ function ABCMusic:convertStringFraction(s)
                         
     if string.find(s, "/") ~= nil then
           
-        local numerator = tonumber(string.sub(s,1,string.find(s,"/")-1))
-        local denominator = tonumber(string.sub(s,string.find(s,"/")+1))            
-        s = numerator / denominator
+        local lnNumerator = tonumber(string.sub(s,1,string.find(s,"/")-1))
+        local lnDenominator = tonumber(string.sub(s,string.find(s,"/")+1))            
+        s = lnNumerator / lnDenominator
     end
     return s
 end
 
+-- This function steps through the ABC tune and tries to make sense of it using the TOKEN table.
 function ABCMusic:parseTune(destructableABCtune)
     
     self.destructableABCtune = destructableABCtune
     if self.DEBUG then  print(self.destructableABCtune.."\n") end
     
     -- Go through the tune looking for ties and replace them with a single note of longer duration
-    local searchStartIndex
+    local lnSearchStartIndex
     
     -- find the first match beyond the key sig and index it
     local startTieIndex
@@ -184,12 +261,13 @@ function ABCMusic:parseTune(destructableABCtune)
     local tieCapture2
     local originalTieDurationLength
     local endKeySigIndex 
-    _, endKeySigIndex = string.find(self.destructableABCtune, tokenList["TOKEN_KEY"],searchStartIndex)
+    _, endKeySigIndex = 
+    string.find(self.destructableABCtune, gtTokenList["TOKEN_KEY"],lnSearchStartIndex)
     
-    searchStartIndex = endKeySigIndex 
+    lnSearchStartIndex = endKeySigIndex 
     --
     repeat 
-    startTieIndex, endTieIndex, tieCapture1, tieCapture2 = string.find(self.destructableABCtune, tokenList["TOKEN_NOTE_DURATION"].."-",searchStartIndex)
+    startTieIndex, endTieIndex, tieCapture1, tieCapture2 = string.find(self.destructableABCtune, gtTokenList["TOKEN_NOTE_DURATION"].."-",lnSearchStartIndex)
     
     -- determine if the start tie was in a chord or not
     local startedInTie
@@ -312,7 +390,7 @@ function ABCMusic:parseTune(destructableABCtune)
          --   .. "["..tieCapture1..totalTieDuration.."]"..secondPart
           -- .. "z"..tieCapture2.."]"..secondPart)
            
-           -- print("did not start in tie, added "..createdChord .. " and searching from " ..searchStartIndex)
+           -- print("did not start in tie, added "..createdChord .. " and searching from " ..lnSearchStartIndex)
         
         end
         
@@ -320,10 +398,39 @@ function ABCMusic:parseTune(destructableABCtune)
           
        --   print("finished ".. firstPart.." with ".. totalTieDuration.. " and "..secondPart)    
         -- inch forward to start the next search
-        searchStartIndex = searchStartIndex + searchStartAddition
+        lnSearchStartIndex = lnSearchStartIndex + searchStartAddition
     end
     until originalEndTieIndex == nil
         
+    --[[ turn all the chords with only note into single notes
+    lnSearchStartIndex = 1
+    local middlePart
+    local rawMatch
+    
+   -- while true do 
+        repeat
+        -- find next instance of chord
+        startChordIndex, endChordIndex, rawMatch = string.find(self.destructableABCtune, gtTokenList["TOKEN_CHORD_DURATION"],lnSearchStartIndex)
+        
+        -- bail if none found
+        if startChordIndex  == nil then break end
+        
+        -- if only one note in chord, delete the brackets
+        
+        -- if, starting from the third character, we don't find any notes
+        if string.find(rawMatch, gtTokenList["TOKEN_NOTE_DURATION"],2) == nil then
+            --print(startChordIndex, endChordIndex, rawMatch)
+            firstPart = string.sub(self.destructableABCtune,1,startChordIndex-1)
+            middlePart = string.sub(self.destructableABCtune,startChordIndex+1,endChordIndex-1)
+            secondPart = string.sub(self.destructableABCtune,endChordIndex+1)
+            self.destructableABCtune = firstPart..middlePart..secondPart
+        end
+        
+        lnSearchStartIndex = endChordIndex
+        until rawMatch == nil
+   --]]
+    
+     
     if self.DEBUG then print(self.destructableABCtune) end
     ------
     -- Go through each token and find the first match in the tune.  Use the biggest lowest
@@ -343,7 +450,7 @@ function ABCMusic:parseTune(destructableABCtune)
     while true do
         
         -- Loop through all tokens to see which one matches the start of the whittled tune.
-        for key, value in pairs(tokenList) do
+        for key, value in pairs(gtTokenList) do
             
             local token = value
             -- Find the start and end index of the token match, plus record what was in the 
@@ -368,7 +475,7 @@ function ABCMusic:parseTune(destructableABCtune)
                 -- In case there are two possible matches, then take the biggest one.    
                 -- This shouldn't happen if the token patterns are right.
                if endIndex > lastLongest then
-                 
+                 --     if self.DEBUG then print(lastLongest.." arrooga ".. key.." "..endIndex) end
                     lastLongest = endIndex
                     lastToken = key
                     lastTokenMatch = tokenMatch
@@ -441,8 +548,11 @@ function ABCMusic:createSoundTable()
         rawMatch = self.parsedTune[parsedTunePointer + 1]
         value1 = self.parsedTune[parsedTunePointer + 2]
         value2 = self.parsedTune[parsedTunePointer + 3]
+        
+        -- Doing anything here seems to take forever.
+        -- print(token.."\n"..rawMatch.."\n"..value1.."\n"..value2) end
     
-        -- setting the key sig
+        -- this is so cool: setting the key sig
         if token == "TOKEN_KEY" then
             
             if value2 == 1 then
@@ -452,9 +562,9 @@ function ABCMusic:createSoundTable()
             end
             
             -- search cycle for marching tonic.
-            for i = 1, #cycleOfFifths do
+            for i = 1, #gtCycleOfFifths do
            
-                if cycleOfFifths[i] == value1 then
+                if gtCycleOfFifths[i] == value1 then
                     cycleOfFifthsIndex = i
                     break
                 end
@@ -474,14 +584,14 @@ function ABCMusic:createSoundTable()
                     
                     if cycleOfFifthsIndex > 8 then -- if on the right hand side of circle
                         for x = 7, (cycleOfFifthsIndex - 2) do
-                            self.accidentals = self.accidentals .. cycleOfFifths[x]
+                            self.accidentals = self.accidentals .. gtCycleOfFifths[x]
                         end 
                     end
                     -- if the key is C major or A minor, the centre of the cycle, 
                     -- no accidentals are needed.
                     if cycleOfFifthsIndex < 8 then -- if on the left hand side of circle
                         for x = 6, (cycleOfFifthsIndex - 1), -1 do
-                            self.accidentals = self.accidentals .. cycleOfFifths[x]
+                            self.accidentals = self.accidentals .. gtCycleOfFifths[x]
                         end 
                     end
              
@@ -589,9 +699,17 @@ function ABCMusic:createSoundTable()
             
              -- If there are chords to play at the same time, they will be in the tempChord table.      
             if value1~="z" then
-                table.insert(tempChord,{ABCMusic:convertNoteToPitch(value1), ABCMusic:convertDurationToSeconds(duration,self.tempo)* self.tupletMultiplier,gnNoteVolume})
+                table.insert(tempChord,
+                {ABCMusic:convertNoteToPitch(value1),
+                 ABCMusic:convertDurationToSeconds(duration,self.tempo)* self.tupletMultiplier,
+                 gnNoteVolume,
+                 self.instrument})
             else
-                table.insert(tempChord,{"z", ABCMusic:convertDurationToSeconds(duration* self.tupletMultiplier,self.tempo),0})
+                table.insert(tempChord,
+                {"z",
+                 ABCMusic:convertDurationToSeconds(duration* self.tupletMultiplier,self.tempo),
+                 0,
+                 0})
             end
             table.insert(self.soundTable,tempChord)
             tempChord = {}
@@ -608,12 +726,16 @@ function ABCMusic:createSoundTable()
             end
             
             duration = tonumber(duration)
-    table.insert(self.soundTable,{{"z", ABCMusic:convertDurationToSeconds(duration,self.tempo),gnNoteVolume}})
+            table.insert(self.soundTable,
+            {{"z", 
+             ABCMusic:convertDurationToSeconds(duration,self.tempo),
+             gnNoteVolume,
+             self.instrument}})
         end 
         
         if token == "TOKEN_TIE" then
-            value1, duration1 = string.match(value1,tokenList["TOKEN_NOTE_DURATION"])
-            value2, duration2 = string.match(value2,tokenList["TOKEN_NOTE_DURATION"])
+            value1, duration1 = string.match(value1,gtTokenList["TOKEN_NOTE_DURATION"])
+            value2, duration2 = string.match(value2,gtTokenList["TOKEN_NOTE_DURATION"])
             
            if self.DEBUG then print("val1 " .. value1.. " value2 ".. value2) end
             
@@ -641,7 +763,11 @@ function ABCMusic:createSoundTable()
             if self.DEBUG then print("dur1 ".. duration1 .. "dur2 ".. duration2) end
 
             duration = tonumber(duration1) + tonumber(duration2)
-            table.insert(self.soundTable,{{ABCMusic:convertNoteToPitch(value1), ABCMusic:convertDurationToSeconds(duration,self.tempo),gnNoteVolume}})
+            table.insert(self.soundTable,
+            {{ABCMusic:convertNoteToPitch(value1), 
+             ABCMusic:convertDurationToSeconds(duration,self.tempo),
+             gnNoteVolume,
+             self.instrument}})
         end
         
         if token == "TOKEN_METRE" then
@@ -681,19 +807,44 @@ function ABCMusic:createSoundTable()
             
             
         end
-        
+       --[[ 
+        if token == "TOKEN_TUPLET" then
+            -- More types of tuplets exist, up to 9, but need more work.
+            if value1 == "2" then
+                duration = 1.5 -- the 2 signals two notes in the space of three
+                -- We reprocess the notes making up the tuplet
+                for i = 1, string.len(value2) do
+                    note,noteLength = string.match(value2,gtTokenList["TOKEN_NOTE_DURATION"],i)
+                    table.insert(self.soundTable,{{ABCMusic:convertNoteToPitch(note), ABCMusic:convertDurationToSeconds(duration,self.tempo),gnNoteVolume,self.instrument}})
+                end
+            end  
+            
+            if value1 == "3" then
+                duration = 1/3 -- the 3 signals three notes in the space of two
+                -- We reprocess the notes making up the tuplet
+                for i = 1, string.len(value2) do
+                    note,noteLength = string.match(value2,gtTokenList["TOKEN_NOTE_DURATION"],i)
+                    table.insert(self.soundTable,{{ABCMusic:convertNoteToPitch(note), ABCMusic:convertDurationToSeconds(duration, self.tempo),gnNoteVolume,self.instrument}})
+                end
+            end            
+        end
+        --]]
         if token == "TOKEN_GUITAR_CHORD" then
             -- The ABC standard leaves it up to the software how to interpret guitar chords,
             -- but they should precede notes in the ABC tune.  I'm just going with a vamp.
             duration = 1
             self.tempChord = {}
-            if chordList[value1] == nil then
+            if gtChordList[value1] == nil then
                print("Chord ".. value1.. " not found in chord table.")
             else
-                for key, value in pairs(chordList[value1]) do
+                for key, value in pairs(gtChordList[value1]) do
                     -- This places the notes of the chord into a temporary table which will
                     -- be appended to by the next non-chord note.
-                    table.insert(self.tempChord,{ABCMusic:convertNoteToPitch(value1), ABCMusic:convertDurationToSeconds(duration, self.tempo),gnNoteVolume})
+                    table.insert(self.tempChord,
+                    {ABCMusic:convertNoteToPitch(value1), 
+                     ABCMusic:convertDurationToSeconds(duration, self.tempo),
+                     gnNoteVolume,
+                    self.instrument})
                 end        
             end         
         end
@@ -714,7 +865,7 @@ function ABCMusic:createSoundTable()
    
                 -- Reprocess the chord into notes and durations.
                 startIndex, endIndex, note, noteDuration =
-                    string.find(rawMatch,tokenList["TOKEN_NOTE_DURATION"])
+                    string.find(rawMatch,gtTokenList["TOKEN_NOTE_DURATION"])
             
                 if noteDuration == "" or noteDuration == nil then 
                     noteDuration = 1 
@@ -749,9 +900,17 @@ function ABCMusic:createSoundTable()
                 -- be appended to the sound table at the end of the chord.
                 
                 if note ~= "z" then
-                    table.insert(tempChord,{ABCMusic:convertNoteToPitch(note), ABCMusic:convertDurationToSeconds(noteDuration, self.tempo)*self.tupletMultiplier,gnNoteVolume})
+                    table.insert(tempChord,
+                    {ABCMusic:convertNoteToPitch(note), 
+                     ABCMusic:convertDurationToSeconds(noteDuration, self.tempo) * self.tupletMultiplier,
+                     gnNoteVolume,
+                     self.instrument})
                 else
-                    table.insert(tempChord,{"z", ABCMusic:convertDurationToSeconds(noteDuration, self.tempo)*self.tupletMultiplier,0})
+                    table.insert(tempChord,
+                    {"z", 
+                     ABCMusic:convertDurationToSeconds(noteDuration, self.tempo) * self.tupletMultiplier, 
+                     0,
+                     0})
                 end
                 -- Whittle away the chord
                 rawMatch = string.sub(rawMatch, endIndex + 1) 
@@ -766,8 +925,7 @@ function ABCMusic:createSoundTable()
         parsedTunePointer = parsedTunePointer + 4
     end
     
-   -- print(self.dataName)
-    --saveProjectData(self.dataName, self.soundTable)
+    self:saveParsedTune(self.soundTable)
 end
 
 function ABCMusic:fromTheTop()
@@ -787,28 +945,36 @@ function ABCMusic:fade(targetVolume, seconds)
 end
 
 function ABCMusic:play()
+    
     -- Step through the parsed tune and decide whether to play the next bit yet.
-   ABCMusic:timer(0,"x=2")
+   
     -- This normalises the tempo to smooth out lag between cumlative frames.  Meant to be the
     -- same idea for smoothing out animation under variable processing loads.
     self.timeElapsedSinceLastNote = self.timeElapsedSinceLastNote + DeltaTime
     
     -- If there is still a tune and it's time for the next set of notes
-    if gnDurationSeconds <= self.timeElapsedSinceLastNote 
+    if (self.DurationSeconds <= self.timeElapsedSinceLastNote or 
+    (self.soundTablePointer == 1 and self.nLooped ~= true))
         and self.soundTablePointer <= #self.soundTable then
         
-        -- Step through the set of notes nested in the sound table, finding each note and
-        -- its duration.  If we had volume, we would also want to record it in the most nested
-        -- table.
+    
+        -- Step through the set of notes nested in the sound table, finding each note,
+        -- its duration, volume, and instrument.
+        
         -- The operator # gives us the number of elements in a table until a blank one - see Lua 
         -- documentation.
         -- Luckily our table will never have holes in it, or the notes would fall through.
+        
         -- The sound table looks like:
-        -- 1:    1:    1:    44 -- 44th key of piano is A 440 hz
-        --             2:    0.5            -- seconds duration
-        --       2:    1:    46 -- 46th key is B
-        --             2:    0.75
-        -- 2: etc...
+        -- 1:    1:    1:    69     -- 69th MIDI note is A 440 hz, the first note in our chord
+        --             2:    0.5    -- seconds duration
+        --             3:    0.5    -- moderately loud volume
+        --             4:    1      -- Instrument 1, pure tone
+        --       2:    1:    73     -- 73rd key is c#, the second note in this chord
+        --             2:    0.75   -- three-quarters of a second duration
+        --             3:    1      -- loudest volume
+        --             4:    1      -- Instrument 1, pure tone
+        -- 2: the following note etc...
         
         oldTempDuration=0
         tempDuration = 0
@@ -830,27 +996,35 @@ function ABCMusic:play()
             -- to be played at once, this will loop around without delay.
             
            gnPitchBeingPlayed = self.soundTable[self.soundTablePointer][i][1]
-        
-            gnDurationSeconds = ( tonumber(self.soundTable[self.soundTablePointer][i][2]))
             
-            tempDuration = gnDurationSeconds
+            
+           -- gnNoteBeingPlayed = notes[self.soundTable[self.soundTablePointer][i][1]]
+            --print(self.soundTable[self.soundTablePointer][i][2])
+            self.DurationSeconds = ( tonumber(self.soundTable[self.soundTablePointer][i][2]))
+            --print("temp dur was ".. tempDuration)
+            tempDuration = self.DurationSeconds
+           -- soundDuration = (tempDuration/2)*(60/self.tempo)
+            --print(" sound dur is".. soundDuration)
             
             gnNoteVolume = ( tonumber(self.soundTable[self.soundTablePointer][i][3]))
             -- we will multiply this by gnMasterVolume in the sound() call
             
             if gnPitchBeingPlayed ~= "z" then 
-                -- look up based on key of noteNo and the length of note
-                local soundTable = {Waveform = 2, StartFrequency = gnPitchBeingPlayed, SustainTime = 0.6*(math.sqrt(gnDurationSeconds))}
-                    
+            
+            
+            local lnNoteInstrument = self.soundTable[self.soundTablePointer][i][4]
+            if lnNoteInstrument == nil then lnNoteInstrument = 1 end
+            
+            local sfxrDuration = math.sqrt(self.DurationSeconds * 0.441) 
+            - (instrumentTable[lnNoteInstrument]["AttackTime"] + instrumentTable[lnNoteInstrument]["DecayTime"])
+           -- print(gnDurationSeconds,sfxrDuration)
+            local soundTable = {Waveform = 2, StartFrequency = gnPitchBeingPlayed, SustainTime = sfxrDuration}
+                
+            -- add instrument parameters
+            for k,v in pairs(instrumentTable[lnNoteInstrument]) do soundTable[k] = v end
+                
                 sound(DATA, sound( ENCODE, soundTable ),gnNoteVolume*(gnMasterVolume+gnMasterVolumeModifier))
             
-            end
-                       
-            if self.DEBUG then 
-                y = y + 20
-                if y > HEIGHT then y=0 end
-                background(0, 0, 0, 255)
-                text(gnPitchBeingPlayed .." " ..gnDurationSeconds, WIDTH/2, HEIGHT - y)
             end
             
             self.semitoneModifier = 0
@@ -864,11 +1038,16 @@ function ABCMusic:play()
             end
         end
       -- print("shortest was " .. tempDuration)
-        gnDurationSeconds = tempDuration
+        self.DurationSeconds = tempDuration
     
-        if self.LOOP ~= nil and self.soundTablePointer == #self.soundTable then 
-            self.soundTablePointer = 1
-        else
+        
+        -- Looping music... we need a better way to do this...
+            if self.LOOP ~= nil and self.soundTablePointer == #self.soundTable then 
+                self.soundTablePointer = 1
+                self.nLooped = true
+            else
+        
+       -- else
             -- Increment the pointer in our sound table.
             self.soundTablePointer = self.soundTablePointer + 1
         end
@@ -925,15 +1104,19 @@ function ABCMusic:convertNoteToPitch(n)
                             
             end
             
-            pos = self.semitoneModifier + 44
-        
-            pitch = pitchTable[pos]
+            pos = self.semitoneModifier + 60
             
-    return pitch
+            -- thanks to KMEB and Codeslinger for figuring this out and explaining it            
+            local f = 440*2^((pos-69)/12)
+            -- formulae figured out from sfxr by KMEB and Codeslinger
+            pitch = math.sqrt(f/44100*100/8 - 0.001)                           
+                
+    return pitch 
 end
 
 function ABCMusic:convertDurationToSeconds(d,t)
     tempDuration = d
+            --print("temp dur was ".. tempDuration)
     soundDuration = (tempDuration/2)*(60/t)
     return soundDuration
 end
@@ -945,9 +1128,11 @@ function ABCMusic:adjustSoundBufferSize()
     
     sb,used =  soundBufferSize()
     --print(sb,used)
-    
+    if sb > 60 then
+        print("Reached soft limit of sound buffer: ".. sb .. "mB")
+    end
     -- extend the cache if getting full
-    if used > (sb * 0.9) then
+    if used > (sb * 0.9) and sb < 60 then
         soundBufferSize(sb + (sb * 0.1))
     end
     
@@ -965,9 +1150,10 @@ function table.contains(table, element)
 end
     
 function ABCMusic:preCache()
-    -- this function create the soundbuffer for all the unique sounds.
+    -- this function create the soundbuffer for all the ?unique? sounds.
     -- better this delay comes all at once at the beginning than during the performance.
     -- cover it with a loading screen.
+
 
     if gPreCacheSoundTable == nil then 
         gPreCacheSoundTable = {}
@@ -980,7 +1166,7 @@ function ABCMusic:preCache()
     -- flatten sound table
     for i=1,#self.soundTable do
         for j=1, #self.soundTable[i] do
-            local data = {self.soundTable[i][j][1], self.soundTable[i][j][2]} 
+            local data = {self.soundTable[i][j][1], self.soundTable[i][j][2], self.soundTable[i][j][3], self.soundTable[i][j][4]} 
              -- if not already in there 
            
                 
@@ -1000,22 +1186,32 @@ function ABCMusic:preCachePlay()
     -- play it all! this runs in main:draw() and should trigger whenever new sounds are added
     
     -- if we're done caching then do nothing
-    if cachedIdx == nil then return true end
-    if cachedIdx >= #gPreCacheSoundTable then return true end
+    if gnCachedIdx == nil then return true end
+    if gnCachedIdx >= #gPreCacheSoundTable then return true end
     
     -- is it time to cache a new sound?
-    if ElapsedTime > nextT then
-        cachedIdx = cachedIdx + 1
-        --print("caching",self.cachedIdx)
+    if ElapsedTime > gnNextT then
+        gnCachedIdx = gnCachedIdx + 1
+        
         ABCMusic:adjustSoundBufferSize()
         
-        nextT = nextT + cachingSpeed
+        gnNextT = gnNextT + gnCachingSpeed
 
-        gnPitchBeingPlayed = gPreCacheSoundTable[cachedIdx][1]
-        gnDurationSeconds = ( tonumber(gPreCacheSoundTable[cachedIdx][2]))
-        gnNoteVolume = 0 -- silent, otherwise: cacophony!    
-                
-            local soundTable = {Waveform = 2, StartFrequency = gnPitchBeingPlayed, SustainTime = 0.6*(math.sqrt(gnDurationSeconds))}
+        gnPitchBeingPlayed = gPreCacheSoundTable[gnCachedIdx][1]
+        self.DurationSeconds = ( tonumber(gPreCacheSoundTable[gnCachedIdx][2]))
+        gnNoteVolume = 0 -- silent, otherwise: cacophony!
+        
+        local lnNoteInstrument = gPreCacheSoundTable[gnCachedIdx][4]
+        if lnNoteInstrument == nil then lnNoteInstrument = 1 end
+            
+               -- print("in precache"..self.instrument)
+        local sfxrDuration = math.sqrt(self.DurationSeconds * 0.441) - 
+        (instrumentTable[lnNoteInstrument]["AttackTime"] + instrumentTable[lnNoteInstrument]["DecayTime"])
+        if self.DEBUG then print(self.DurationSeconds,sfxrDuration) end
+        local soundTable = {Waveform = 2, StartFrequency = gnPitchBeingPlayed, SustainTime = sfxrDuration}
+                        
+        -- add instrument parameters
+            for k,v in pairs(instrumentTable[lnNoteInstrument]) do soundTable[k] = v end    
                 
             ABCMusic:adjustSoundBufferSize()
             sound(DATA, sound( ENCODE, soundTable ),gnNoteVolume)
@@ -1024,7 +1220,7 @@ function ABCMusic:preCachePlay()
     
    if self.DEBUG then 
         print(soundBufferSize())
-        print("that was " .. gnPitchBeingPlayed.." "..gnDurationSeconds)
+        print("that was instrument ".. self.instrument .." gnPitchBeingPlayed " .. gnPitchBeingPlayed.." self.DurationSeconds "..self.DurationSeconds)
      end
     
 end

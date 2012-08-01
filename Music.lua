@@ -2,7 +2,7 @@ Music = class()
 
 Music.loadProgress = 0
 function ABCMusic:percentageCached()
-    return cachedIdx / #gPreCacheSoundTable
+    return gnCachedIdx / #gPreCacheSoundTable
 end
 
 -- THESE FUNCTIONS ARE THE PUBLIC API --
@@ -40,7 +40,7 @@ function Music.tick()
                 --if k == "Hard" then Music.map[k] = Music.map["Medium"] return nil end
                -- if k == "Impossble" then Music.map[k] = Music.map["Crazy"] return nil end
                 --print("loading "..k)
-                Music.map[k] = ABCMusic(v,1)
+                Music.map[k] = ABCMusic(v,1,1)
                -- print("loading "..k)
                 Music.loadProgress = Music.loadProgress + .3 / Table.size(Music.tuneMap)
                 return nil
